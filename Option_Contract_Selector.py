@@ -7,13 +7,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 页面配置
 st.set_page_config(
-    page_title="期权合约选择器",
+    page_title="贴水比较器",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # 标题和说明
-st.title("期权合约选择器")
+st.title("贴水比较器")
 st.markdown("""
 选择两个行权价对应的Call和Put合约，查看4个合约的最新买一卖一价格。
 """)
