@@ -322,6 +322,22 @@ if 'option_data' not in st.session_state:
     st.session_state.option_data = None
 if 'option_mapping' not in st.session_state:
     st.session_state.option_mapping = None
+if 'auto_refresh_active' not in st.session_state:
+    st.session_state.auto_refresh_active = False
+if 'last_auto_refresh_time' not in st.session_state:
+    st.session_state.last_auto_refresh_time = 0
+if 'max_premium_diff' not in st.session_state:
+    st.session_state.max_premium_diff = None
+if 'max_premium_diff_time' not in st.session_state:
+    st.session_state.max_premium_diff_time = None
+if 'premium_diff_history' not in st.session_state:
+    st.session_state.premium_diff_history = []
+if 'today_date' not in st.session_state:
+    st.session_state.today_date = datetime.date.today().strftime('%Y-%m-%d')
+if 'historical_max_premium_diff' not in st.session_state:
+    st.session_state.historical_max_premium_diff = None
+if 'historical_max_premium_diff_datetime' not in st.session_state:
+    st.session_state.historical_max_premium_diff_datetime = None
 
 # 侧边栏 - 用户选择界面
 st.sidebar.header("📋 选择期权合约")
@@ -406,8 +422,23 @@ trade_direction_2 = st.sidebar.selectbox(
     help="Buy: Call取卖一价，Put取买一价；Sell: Call取买一价，Put取卖一价"
 )
 
-# 刷新按钮
-refresh_button = st.sidebar.button("🔄 刷新价格", help="获取最新的买一卖一价格")
+# 刷新控制按钮
+st.sidebar.subheader("🔄 刷新控制")
+col_refresh, col_stop = st.sidebar.columns(2)
+
+with col_refresh:
+    refresh_button = st.button("🔄 开始自动刷新", help="开始每5秒自动刷新价格")
+
+with col_stop:
+    stop_button = st.button("⏹️ 停止刷新", help="停止自动刷新")
+
+# 处理按钮点击
+if refresh_button:
+    st.session_state.auto_refresh_active = True
+    st.session_state.last_auto_refresh_time = time.time()
+
+if stop_button:
+    st.session_state.auto_refresh_active = False
 
 # 主界面显示
 st.subheader(f"{ETF_DISPLAY_NAMES.get(selected_etf, selected_etf)} 期权合约对比")
@@ -439,8 +470,29 @@ contracts_info = [
     {"name": f"Put {selected_month_2}-{strike_2}", "code": put_2, "type": "Put", "strike": strike_2, "month": selected_month_2},
 ]
 
+# 检查是否需要刷新数据
+current_time = time.time()
+should_refresh = False
+
+# 检查是否需要重置当天记录（新的一天）
+current_date = datetime.date.today().strftime('%Y-%m-%d')
+if st.session_state.today_date != current_date:
+    st.session_state.today_date = current_date
+    st.session_state.max_premium_diff = None
+    st.session_state.max_premium_diff_time = None
+    st.session_state.premium_diff_history = []
+
+# 判断是否需要刷新
+if refresh_button:
+    should_refresh = True
+elif st.session_state.auto_refresh_active and (current_time - st.session_state.last_auto_refresh_time >= 5):
+    should_refresh = True
+    st.session_state.last_auto_refresh_time = current_time
+elif 'price_data' not in st.session_state:
+    should_refresh = True
+
 # 显示合约信息
-if refresh_button or 'price_data' not in st.session_state:
+if should_refresh:
     with st.spinner("正在获取最新价格和计算贴水值..."):
         # 获取ETF实时价格
         etf_config, etf_prices = get_real_time_etf_prices()
@@ -550,6 +602,34 @@ if refresh_button or 'price_data' not in st.session_state:
         premium_diff = None
         if group1_premium and group2_premium:
             premium_diff = group2_premium['premium_value'] - group1_premium['premium_value']
+            
+            # 记录贴水差值历史
+            beijing_tz = datetime.timezone(datetime.timedelta(hours=8))
+            current_datetime = datetime.datetime.now(beijing_tz)
+            current_time_str = current_datetime.strftime('%H:%M:%S')
+            current_datetime_str = current_datetime.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 添加到历史记录
+            st.session_state.premium_diff_history.append({
+                'time': current_time_str,
+                'diff': premium_diff,
+                'group1_premium': group1_premium['premium_value'],
+                'group2_premium': group2_premium['premium_value']
+            })
+            
+            # 只保留最近50条记录
+            if len(st.session_state.premium_diff_history) > 50:
+                st.session_state.premium_diff_history = st.session_state.premium_diff_history[-50:]
+            
+            # 更新当天最大贴水差值
+            if st.session_state.max_premium_diff is None or abs(premium_diff) > abs(st.session_state.max_premium_diff):
+                st.session_state.max_premium_diff = premium_diff
+                st.session_state.max_premium_diff_time = current_time_str
+            
+            # 更新历史最大贴水差值
+            if st.session_state.historical_max_premium_diff is None or abs(premium_diff) > abs(st.session_state.historical_max_premium_diff):
+                st.session_state.historical_max_premium_diff = premium_diff
+                st.session_state.historical_max_premium_diff_datetime = current_datetime_str
         
         # 存储所有计算结果
         st.session_state.price_data = price_results
@@ -558,9 +638,37 @@ if refresh_button or 'price_data' not in st.session_state:
         st.session_state.group2_premium = group2_premium
         st.session_state.premium_diff = premium_diff
 
-# 显示ETF价格和贴水分析结果
-if 'etf_price' in st.session_state:
-    st.info(f"📊 **{ETF_DISPLAY_NAMES.get(selected_etf, selected_etf)} 当前价格**: {st.session_state.etf_price:.4f}")
+# 显示自动刷新状态和ETF价格
+status_col1, status_col2 = st.columns(2)
+
+with status_col1:
+    if st.session_state.auto_refresh_active:
+        st.success("🔄 自动刷新已启动 (每5秒更新)")
+    else:
+        st.info("⏸️ 自动刷新已停止")
+
+with status_col2:
+    if 'etf_price' in st.session_state:
+        st.info(f"📊 **{ETF_DISPLAY_NAMES.get(selected_etf, selected_etf)} 当前价格**: {st.session_state.etf_price:.4f}")
+
+# 显示当天最大贴水差值和历史最大贴水差值
+max_diff_col1, max_diff_col2 = st.columns(2)
+
+with max_diff_col1:
+    if st.session_state.max_premium_diff is not None:
+        st.metric(
+            f"📈 今日最大贴水差值 (绝对值)",
+            f"{st.session_state.max_premium_diff:.4f}",
+            help=f"记录时间: {st.session_state.today_date} {st.session_state.max_premium_diff_time}"
+        )
+
+with max_diff_col2:
+    if st.session_state.historical_max_premium_diff is not None:
+        st.metric(
+            f"🏆 历史最大贴水差值 (绝对值)",
+            f"{st.session_state.historical_max_premium_diff:.4f}",
+            help=f"记录时间: {st.session_state.historical_max_premium_diff_datetime}"
+        )
 
 # 显示贴水分析结果
 if 'group1_premium' in st.session_state and 'group2_premium' in st.session_state and 'premium_diff' in st.session_state:
@@ -725,11 +833,40 @@ if 'price_data' in st.session_state:
                 if 'error' in put_2_data:
                     st.error(f"错误: {put_2_data['error']}")
 
-# 显示最后更新时间
+# 显示最后更新时间和贴水差值历史
 if 'price_data' in st.session_state:
     beijing_tz = datetime.timezone(datetime.timedelta(hours=8))
     beijing_time = datetime.datetime.now(beijing_tz)
-    st.markdown(f"**最后更新时间:** {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
+    
+    # 更新时间和历史记录
+    time_col, history_col = st.columns([1, 2])
+    
+    with time_col:
+        st.markdown(f"**最后更新时间:** {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
+    
+    with history_col:
+        if st.session_state.premium_diff_history:
+            # 显示最近的贴水差值变化
+            recent_history = st.session_state.premium_diff_history[-5:]  # 显示最近5条
+            history_text = "**最近贴水差值:** "
+            for record in recent_history:
+                history_text += f"{record['time']}({record['diff']:.4f}) "
+            st.markdown(history_text)
+
+# 自动刷新逻辑
+if st.session_state.auto_refresh_active:
+    # 显示下次刷新倒计时
+    time_since_last_refresh = time.time() - st.session_state.last_auto_refresh_time
+    remaining_time = max(0, 5 - time_since_last_refresh)
+    
+    if remaining_time > 0:
+        st.info(f"⏰ 下次自动刷新: {remaining_time:.1f}秒后")
+        # 使用短暂的延迟来实现自动刷新
+        time.sleep(0.5)
+        st.rerun()
+    else:
+        # 时间到了，触发刷新
+        st.rerun()
 
 # 添加说明
 st.markdown("---")
@@ -739,11 +876,14 @@ st.markdown("""
 2. 分别选择第一组和第二组的合约月份、行权价和交易方向：
    - **Buy**: Call期权取卖一价，Put期权取买一价
    - **Sell**: Call期权取买一价，Put期权取卖一价
-3. 点击"刷新价格"按钮获取最新价格和计算贴水值
+3. 点击"开始自动刷新"按钮启动每5秒自动更新，点击"停止刷新"按钮停止自动更新
 4. 系统会显示：
-   - ETF当前价格
+   - 自动刷新状态和ETF当前价格
+   - 今日最大贴水差值（绝对值）和记录时间
+   - 历史最大贴水差值（绝对值）和记录日期时间
    - 两组合约的贴水值和贴水值差值
    - 每个合约的详细价格信息（⭐标记表示用于计算的价格）
+   - 最近5次贴水差值变化历史
 
 ### 贴水值计算说明
 - **内在价值**：
@@ -756,6 +896,8 @@ st.markdown("""
 ### 注意事项
 - 价格数据来源于实时行情，可能存在延迟
 - 时间价值可以为负数，表示期权交易价格低于其内在价值
-- 时间价值计算基于当前ETF价格和期权理论价值
+- 自动刷新功能每5秒更新一次数据，会自动记录当天和历史最大贴水差值
+- 今日最大贴水差值每天开始时会重置，历史最大贴水差值会持续保持
+- 所有时间均为北京时间（UTC+8）
 - 建议在交易时间内使用以获取准确的价格信息
 """)
