@@ -493,7 +493,6 @@ elif 'price_data' not in st.session_state:
 
 # 显示合约信息
 if should_refresh:
-    with st.spinner("正在获取最新价格和计算贴水值..."):
         # 获取ETF实时价格
         etf_config, etf_prices = get_real_time_etf_prices()
         current_etf_price = get_etf_price_for_type(selected_etf, etf_config, etf_prices)
@@ -638,18 +637,36 @@ if should_refresh:
         st.session_state.group2_premium = group2_premium
         st.session_state.premium_diff = premium_diff
 
-# 显示自动刷新状态和ETF价格
-status_col1, status_col2 = st.columns(2)
-
-with status_col1:
-    if st.session_state.auto_refresh_active:
-        st.success("🔄 自动刷新已启动 (每5秒更新)")
-    else:
-        st.info("⏸️ 自动刷新已停止")
-
-with status_col2:
-    if 'etf_price' in st.session_state:
-        st.info(f"📊 **{ETF_DISPLAY_NAMES.get(selected_etf, selected_etf)} 当前价格**: {st.session_state.etf_price:.4f}")
+# 创建固定的状态显示区域
+status_container = st.container()
+with status_container:
+    # 显示自动刷新状态和ETF价格
+    status_col1, status_col2, status_col3 = st.columns([1, 1, 1])
+    
+    with status_col1:
+        if st.session_state.auto_refresh_active:
+            if should_refresh:
+                st.success("🔄 正在刷新数据...")
+            else:
+                # 显示倒计时
+                time_since_last_refresh = time.time() - st.session_state.last_auto_refresh_time
+                remaining_time = max(0, 5 - time_since_last_refresh)
+                st.success(f"🔄 下次刷新: {remaining_time:.1f}秒")
+        else:
+            st.info("⏸️ 自动刷新已停止")
+    
+    with status_col2:
+        if 'etf_price' in st.session_state:
+            st.info(f"📊 **{ETF_DISPLAY_NAMES.get(selected_etf, selected_etf)}**: {st.session_state.etf_price:.4f}")
+        else:
+            st.info("📊 等待价格数据...")
+    
+    with status_col3:
+        # 显示最后更新时间
+        if 'price_data' in st.session_state:
+            beijing_tz = datetime.timezone(datetime.timedelta(hours=8))
+            beijing_time = datetime.datetime.now(beijing_tz)
+            st.info(f"⏰ {beijing_time.strftime('%H:%M:%S')}")
 
 # 显示当天最大贴水差值和历史最大贴水差值
 max_diff_col1, max_diff_col2 = st.columns(2)
@@ -833,39 +850,30 @@ if 'price_data' in st.session_state:
                 if 'error' in put_2_data:
                     st.error(f"错误: {put_2_data['error']}")
 
-# 显示最后更新时间和贴水差值历史
-if 'price_data' in st.session_state:
-    beijing_tz = datetime.timezone(datetime.timedelta(hours=8))
-    beijing_time = datetime.datetime.now(beijing_tz)
-    
-    # 更新时间和历史记录
-    time_col, history_col = st.columns([1, 2])
-    
-    with time_col:
-        st.markdown(f"**最后更新时间:** {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
-    
-    with history_col:
-        if st.session_state.premium_diff_history:
-            # 显示最近的贴水差值变化
-            recent_history = st.session_state.premium_diff_history[-5:]  # 显示最近5条
-            history_text = "**最近贴水差值:** "
-            for record in recent_history:
-                history_text += f"{record['time']}({record['diff']:.4f}) "
-            st.markdown(history_text)
+# 显示贴水差值历史记录
+if st.session_state.premium_diff_history:
+    with st.expander("📈 贴水差值历史记录", expanded=False):
+        # 显示最近的贴水差值变化
+        recent_history = st.session_state.premium_diff_history[-10:]  # 显示最近10条
+        history_df = pd.DataFrame(recent_history)
+        if not history_df.empty:
+            history_df['diff'] = history_df['diff'].round(4)
+            history_df['group1_premium'] = history_df['group1_premium'].round(4)
+            history_df['group2_premium'] = history_df['group2_premium'].round(4)
+            history_df.columns = ['时间', '贴水差值', '第一组贴水', '第二组贴水']
+            st.dataframe(history_df.iloc[::-1], use_container_width=True, hide_index=True)  # 倒序显示，最新的在上面
 
 # 自动刷新逻辑
 if st.session_state.auto_refresh_active:
-    # 显示下次刷新倒计时
     time_since_last_refresh = time.time() - st.session_state.last_auto_refresh_time
     remaining_time = max(0, 5 - time_since_last_refresh)
     
-    if remaining_time > 0:
-        st.info(f"⏰ 下次自动刷新: {remaining_time:.1f}秒后")
-        # 使用短暂的延迟来实现自动刷新
-        time.sleep(0.5)
+    if remaining_time <= 0:
+        # 时间到了，触发刷新
         st.rerun()
     else:
-        # 时间到了，触发刷新
+        # 使用短暂的延迟来实现自动刷新
+        time.sleep(0.5)
         st.rerun()
 
 # 添加说明
